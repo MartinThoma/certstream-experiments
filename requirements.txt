@@ -1,0 +1,5 @@
+websockets>=11.0.3
+
+# Development dependencies
+ruff>=0.1.13
+pre-commit>=3.5.0
