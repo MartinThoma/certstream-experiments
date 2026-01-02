@@ -7,152 +7,15 @@ import json
 import logging
 import os
 import signal
-import sqlite3
-from abc import ABC, abstractmethod
-from typing import Any
 
 import websockets
+
+from certificate_store import CertificateStore
+from rocksdb_store import RocksDBCertificateStore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-
-class CertificateStore(ABC):
-    """Abstract base class for certificate storage implementations"""
-
-    @abstractmethod
-    def init_database(self) -> None:
-        """Initialize the database and schema"""
-        pass
-
-    @abstractmethod
-    def store_certificate(self, domain: str, data: dict[str, Any]) -> bool:
-        """Store or update a certificate entry"""
-        pass
-
-    @abstractmethod
-    def get_certificate(self, domain: str) -> dict[str, Any] | None:
-        """Retrieve a certificate entry by domain"""
-        pass
-
-    @abstractmethod
-    def get_all_certificates(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Retrieve all certificates with optional limit"""
-        pass
-
-
-class SQLiteCertificateStore(CertificateStore):
-    """SQLite implementation of certificate storage"""
-
-    def __init__(self, db_path: str = "certstream.db"):
-        """Initialize SQLite database"""
-        self.db_path = db_path
-        self.init_database()
-
-    def init_database(self) -> None:
-        """Create the certificates table if it doesn't exist"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS certificates (
-                domain TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """
-        )
-
-        # Enable write-ahead logging for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.commit()
-        conn.close()
-        logger.info(f"SQLite database initialized at {self.db_path}")
-
-    def store_certificate(self, domain: str, data: dict[str, Any]) -> bool:
-        """Store or update a certificate entry in SQLite"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-
-            # Convert dict to JSON string
-            data_json = json.dumps(data)
-
-            # Use INSERT OR REPLACE to handle updates
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO certificates (domain, data, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-                (domain, data_json),
-            )
-
-            conn.commit()
-            conn.close()
-
-            logger.debug(f"Stored certificate for domain: {domain}")
-            return True
-        except Exception as e:
-            logger.error(f"Error storing certificate for {domain}: {e}")
-            return False
-
-    def get_certificate(self, domain: str) -> dict[str, Any] | None:
-        """Retrieve a certificate entry from SQLite"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                SELECT data FROM certificates WHERE domain = ?
-            """,
-                (domain,),
-            )
-
-            result = cursor.fetchone()
-            conn.close()
-
-            if result:
-                return json.loads(result[0])
-            return None
-        except Exception as e:
-            logger.error(f"Error retrieving certificate for {domain}: {e}")
-            return None
-
-    def get_all_certificates(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Retrieve all certificates from SQLite (with optional limit)"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                SELECT domain, data, created_at, updated_at
-                FROM certificates
-                ORDER BY updated_at DESC
-                LIMIT ?
-            """,
-                (limit,),
-            )
-
-            results = cursor.fetchall()
-            conn.close()
-
-            return [
-                {
-                    "domain": row[0],
-                    "data": json.loads(row[1]),
-                    "created_at": row[2],
-                    "updated_at": row[3],
-                }
-                for row in results
-            ]
-        except Exception as e:
-            logger.error(f"Error retrieving certificates: {e}")
-            return []
 
 
 class CertStreamCollector:
@@ -233,7 +96,8 @@ class CertStreamCollector:
 async def main():
     """Main entry point"""
     # Use SQLite as the storage backend
-    store = SQLiteCertificateStore(db_path="certstream.db")
+    # store = SQLiteCertificateStore(db_path="certstream.db")
+    store = RocksDBCertificateStore(db_path="certstream_rocksdb")
 
     # Create collector with the store
     ws = os.environ["CERTSTREAM_WEBSOCKET_URL"]
